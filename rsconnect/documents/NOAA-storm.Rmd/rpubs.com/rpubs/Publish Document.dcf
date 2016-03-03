@@ -1,0 +1,7 @@
+name: Publish Document
+account: rpubs
+server: rpubs.com
+bundleId:
+        https://api.rpubs.com/api/v1/document/155779/c0a5b6b240154e2296266353fad1a329
+url: http://rpubs.com/theyanike/155779
+when: 1457003419.87971

@@ -1,0 +1,471 @@
+---
+title: "The most impacting weather events across the US"
+author: "Molina Rafidison"
+date: "23 Feb 2016"
+output: 
+    html_document:
+        keep_md: yes
+---
+
+## Preliminaries
+
+### Synopsis
+
+This project involves exploring the U.S. National Oceanic and Atmospheric Administration's (NOAA) storm database. This database tracks characteristics of major storms and weather events in the United States, including when and where they occur, as well as estimates of any fatalities, injuries, and property damage.  
+  
+The basic goal is to explore the NOAA Storm Database and answer the following questions about severe weather events:  
+1. Across the United States, which types of events are most harmful with respect to population health?  
+2. Across the United States, which types of events have the greatest economic consequences?
+  
+More information about the variables in the dataset are given by the:  
+1. National Weather Service [Storm Data Documentation](https://d396qusza40orc.cloudfront.net/repdata%2Fpeer2_doc%2Fpd01016005curr.pdf)  
+2. And National Climatic Data Center Storm Events [FAQ](https://d396qusza40orc.cloudfront.net/repdata%2Fpeer2_doc%2FNCDC%20Storm%20Events-FAQ%20Page.pdf)    
+
+### Resources
+
+This analysis is run in RStudio version 0.99.489. More information about the environment are shown below:
+
+```{r sessionInfo}
+sessionInfo()
+```
+
+## Data preprocessing 
+
+### Packages and path
+
+First of all, let us load any package we would need to run the full analysis.  
+If the result is FALSE, the package(s) first need to be installed with the `install.packages()` function.
+
+```{r packages, message=FALSE}
+packages <- c("dplyr", "ggplot2", "knitr", "R.utils", "reshape2")
+sapply(packages, require, character.only = TRUE, quietly = TRUE)
+```
+
+And set the path.  
+Make sure to be in the right working directory.
+
+```{r path}
+path <- getwd()
+```
+
+### Getting and reading data
+
+Download the Internet-based file from the URL source.  
+Unzip the zip file containing the data if the csv files does not exist in the working directory.
+
+```{r dlFile}
+if (!file.exists("repdata-data-StormData.csv")) {
+    fileUrl <- "https://d396qusza40orc.cloudfront.net/repdata%2Fdata%2FStormData.csv.bz2"
+    tempFile <- "Dataset.zip"
+    download.file(fileUrl, file.path(path, tempFile))
+    ## Unzipping
+    bunzip2(file.path(path, "repdata-data-StormData.csv.bz2"))
+    ## Deleting temporary compressed file
+    unlink(tempFile)
+}
+```
+
+Load the data and assign it to the variable `NOAA`. This might take a few seconds.
+
+```{r}
+NOAA <- read.csv(file.path(path, "repdata-data-StormData.csv"))
+```
+
+Let us have a look at what the data look like.
+
+```{r}
+str(NOAA)
+```
+
+### Cleaning data
+
+The dataset will work on only need 8 variables from the original database. And let us convert `BGN_DATE` into date.
+
+```{r}
+cleanNOAA <- NOAA %>%
+    select(BGN_DATE, EVTYPE, FATALITIES, INJURIES, CROPDMG, CROPDMGEXP, PROPDMG, PROPDMGEXP)
+
+cleanNOAA$BGN_DATE <- as.Date(cleanNOAA$BGN_DATE, "%m/%d/%Y")
+cleanNOAA$EVTYPE <- toupper(cleanNOAA$EVTYPE)
+```
+
+Browsing the official NOAA's website leads us to [this page](http://www.ncdc.noaa.gov/stormevents/details.jsp) giving more details about the storm event database. From 1950 to 1996, only 3 event types were recorded: tornado, thunderstorm wind and hail. Keeping these records will indeed bias our findings as they will unfairly add up potential fatalities and injuries to the 3 event types.  
+Thus, the dataset will start from 1996 so that the `EVTYPE` variable is more relevant.
+
+```{r}
+cleanNOAA <- cleanNOAA %>% 
+    filter(BGN_DATE >= "1996-01-01")
+```
+
+The storm data documentation identifies only **48 event types** although the factor variable contains 985 levels.
+So let us write a function that replaces multiple expressions by their respective replacement.
+
+```{r}
+replaceVal <- function(data, var, pattern, replacement, use.regx = FALSE) {
+    if (length(pattern) != length(replacement)) {
+        stop("pattern and replacement vectors do not have the same length.")
+    } else if (use.regx == TRUE) {
+        for (i in 1:length(pattern))
+            data[[var]] <- gsub(pattern[i], replacement[i], data[[var]])
+    } else { 
+        for (i in 1:length(pattern))
+            data[[var]][data[[var]] == pattern[i]] <- replacement[i]
+    } 
+    return(data)
+}
+```
+
+Create two vectors gathering the expressions to replace and their replacements.
+
+```{r}
+pattern <- c("A.+CAL LOW TIDE",
+             ".* *A.+NCHE(S)* *.*",
+             ".* *B.+ZZ.+D(S)* *.*",
+             ".*C.+L *FLOOD.*",
+             ".* *COLD(S)* *.*|.* *CHILL *.*",
+             ".* *DRY.*|.* *DROUGHT *.*",
+             ".* *(DUST)+ *(D.+V.+L)* *.*",
+             "(DUST)+ *ST.+M(S)* *.*",
+             ".* *DEBRIS.* *.*",
+             " *D.+SE *FOG *",
+             ".* *SMOKE(S)* *.*",
+             "RECORD +HEAT(S)*|EX.+ +HEAT(S)*|RECORD +WARM.*(S)*|EX.+ +WARM.*(S)*",
+             "RECORD +COLD(S)*|EX.+ +COLD(S)*",
+             ".*FLASH( |/)+FLOOD.*",
+             "^(URBAN.*|TIDAL)* FL.*D.*G*/* *",
+             " *F.+G *FOG *",
+             "(.*( .)*FROST.* *.*)|(.* *FREEZE *.*)|(FR.+G *.*)",
+             "FUNNEL CLOUD(S)*",
+             "HAIL(S)* *.*",
+             "HEAT(S)* *.*",
+             ".* *RAIN(S)* *.*",
+             "(ACC.+TED|H.+Y)+ *SNOW(S)*.* *.*",
+             ".* *SURF(S)* *.*",
+             "^(H.+H)+ *WIND(S)*.*",
+             " *T.+OON *.*| *HU.+NE *.*",
+             "(ICE)+ *ST.+M(S)* *.*",
+             ".* *(LAKE( |-)*EFFECT)+ *SNOW(S)* *.*",
+             ".* *(LAK.+ORE)+ *FLOOD.*",
+             ".* *LIGHT.*(S)* *.*",
+             "MARINE +HAIL(S)*",
+             "MARINE +HIGH *WIND(S)*",
+             "MARINE +S.+G *WIND(S)*",
+             "MARINE +T.+M *WIND(S)*",
+             "RIP CURRENT(S)*",
+             "SEICHE(S)*",
+             "SLEET(S)*",
+             "STORM *SURGE.*|AS.+CAL HIGH TIDE",
+             "^(S.+G|GUSTY)+ WIND.* *.*|^( *W.*D.*)",
+             "^(SEVERE|GUSTY)*( *T.*S.*T.*M(S)*)+( *(WIND.*)* .*)*",
+             ".* *TORNADO.*(S)* *.*",
+             "(TR.+AL)+ *D.+ION(S)* *.*",
+             "(TR.+AL)+ *ST.+M(S)* *.*",
+             ".* *TSUNAMI(S)* *.*",
+             "(VO.+IC)+ *ASH.* *.*",
+             " *WATERSPOUT(S)*",
+             "WILD.* *FIRE(S)*.*",
+             "(WINTER)+ *ST.+M(S)* *.*",
+             "(WINT.+)+ *WEATHER(S)* *.*|(WINT.+)+ *MIX.*|^SNOW.* *.*"
+             )
+
+replacement <- c("ASTRONOMICAL LOW TIDE",
+             "AVALANCHE",
+             "BLIZZARD",
+             "COASTAL FLOOD",
+             "COLD/WIND CHILL",
+             "DROUGHT",
+             "DUST DEVIL",
+             "DUST STORM",
+             "DEBRIS FLOW",
+             "DENSE FOG",
+             "DENSE SMOKE",
+             "EXCESSIVE HEAT",
+             "EXTREME COLD/WIND CHILL",
+             "FLASH FLOOD",
+             "FLOOD",
+             "FREEZING FOG",
+             "FROST/FREEZE",
+             "FUNNEL CLOUD",
+             "HAIL",
+             "HEAT",
+             "HEAVY RAIN",
+             "HEAVY SNOW",
+             "HIGH SURF",
+             "HIGH WIND",
+             "HURRICANE",
+             "ICE STORM",
+             "LAKE-EFFECT SNOW",
+             "LAKESHORE FLOOD",
+             "LIGHTNING",
+             "MARINE HAIL",
+             "MARINE HIGH WIND",
+             "MARINE STRONG WIND",
+             "MARINE THUNDERSTORM WIND",
+             "RIP CURRENT",
+             "SEICHE",
+             "SLEET",
+             "STORM SURGE/TIDE",
+             "STRONG WIND",
+             "THUNDERSTORM WIND",
+             "TORNADO",
+             "TROPICAL DEPRESSION",
+             "TROPICAL STORM",
+             "TSUNAMI",
+             "VOLCANIC ASH",
+             "WATERSPOUT",
+             "WILDFIRE",
+             "WINTER STORM",
+             "WINTER WEATHER"
+             )
+
+cleanNOAA <- replaceVal(cleanNOAA, "EVTYPE", pattern, replacement, use.regx = TRUE)
+
+str(cleanNOAA)
+```
+
+Our dataset has 653,530 observations. Compute the percentage of the remaining values that are not in `replacement` to decide whether we keep them or not.
+
+```{r}
+outNOAA <- cleanNOAA %>%
+    filter(!(EVTYPE %in% replacement)) %>%
+    tally()
+
+print(outNOAA)
+```
+
+The value that we could not relate to an event type represents 2,177 observations or *0.33%* of the dataset we work on. We therefore decide that removing them from the dataset will not cause any bias.  
+Here is an overview of the cleaned up dataset.
+
+```{r}
+cleanNOAA <- cleanNOAA %>%
+    filter(EVTYPE %in% replacement)
+
+head(cleanNOAA)
+```
+
+
+## Data processing
+
+### Fatalities, injuries and even type
+
+In this first part, focus on the most harmful weather events with respect to population health.  
+To do so, subset from the database the data variables we need. `FATALITIES` and `INJURIES`are the variables related to the human damages.
+
+```{r}
+harmNOAA <- cleanNOAA %>% select(EVTYPE, FATALITIES, INJURIES)
+
+head(harmNOAA)
+```
+
+Consider that the most harmful events with respect to the population gathers fatalities and injuries.  
+So let us sum the data to identify where the records are higher for the `FATALITIES` and `INJURIES` variables in one variable called `HARM`.
+
+```{r}
+harmNOAA <- harmNOAA %>% mutate(VICTIMS = FATALITIES + INJURIES)
+```
+
+The summarizing dataset sums the number of harmful impacts in a descending order and grouped by type of event. Finally, only the number of harmful impacts greater than 0 are included.
+
+```{r}
+harmNOAA <- harmNOAA %>% 
+    group_by(EVTYPE) %>%
+    summarize(VICTIMS = sum(VICTIMS), 
+              FATALITIES = sum(FATALITIES), 
+              INJURIES = sum(INJURIES)) %>%
+    arrange(desc(VICTIMS)) %>%
+    filter(VICTIMS > 0)
+
+head(harmNOAA, 20)
+```
+
+
+### Crop & property damages and event types
+
+In this second part, focus on greatest economic consequences across the US.  
+To do so, subset from the database the data variables we need. `CROPDMG`, `CROPDMGEXP`, `PROPDMG` and `PROPDMGEXP` are the variables related to the crop and property (monetary) damages. Also convert `CROPDMEXP` and `PROPDMGEXP` into characters as they contain letters.
+
+```{r}
+ecoNOAA <- cleanNOAA %>% select(EVTYPE, CROPDMG, CROPDMGEXP, PROPDMG, PROPDMGEXP)
+
+ecoNOAA$CROPDMGEXP <- as.character(ecoNOAA$CROPDMGEXP)
+ecoNOAA$PROPDMGEXP <- as.character(ecoNOAA$PROPDMGEXP)
+
+str(ecoNOAA)
+```
+
+Have a look at the values of the two variables `CROPDMGEXP` and `PROPDMGEXP`.
+
+```{r}
+unique(ecoNOAA$CROPDMGEXP)
+unique(ecoNOAA$PROPDMGEXP)
+```
+
+As described in the Storm Data Documentation, "Alphabetical characters used to signify magnitude include “K” for thousands, “M” for millions, and “B” for billions". Consider that the value "0" and missing value "" stand for simple units. This rule is applied on both variables: `CROPDMGEXP` and `PROPDMGEXP`.  
+Fortunately, we already created a function earlier we will re-use that replaces multiple expressions.
+
+```{r}
+ecoNOAA <- replaceVal(ecoNOAA, 
+                      "CROPDMGEXP", 
+                      c("", "K", "M", "B"), 
+                      c(1, 1000, 1000000, 1000000000))
+ecoNOAA <- replaceVal(ecoNOAA, 
+                      "PROPDMGEXP", 
+                      c("", "0", "K", "M", "B"), 
+                      c(1, 1, 1000, 1000000, 1000000000))
+
+```
+
+The summarizing datasets sums the number of crop and property monetary damages (in M$) in a descending order and grouped by type of event. Finally, only the number of damages greater than 0 are included.  
+
+```{r}
+ecoNOAA <- ecoNOAA %>%
+    mutate(CDMG = (CROPDMG * as.numeric(CROPDMGEXP))/1e+06) %>%
+    mutate(PDMG = (PROPDMG * as.numeric(PROPDMGEXP))/1e+06) %>%
+    group_by(EVTYPE) %>%
+    summarize(CDMG = sum(CDMG), 
+              PDMG = sum(PDMG), 
+              DMG = CDMG + PDMG) %>%
+    arrange(desc(DMG)) %>%
+    filter(DMG > 0)
+
+head(ecoNOAA, 10)
+```
+
+
+## Results
+
+### Most harmful weather events
+
+Reminder:  
+1. Across the United States, which types of events are most harmful with respect to population health?  
+In order to answer the question, we will only take the ten first rows of the summarizing dataset we worked on earlier.  
+Melt the subset to have a tiny one that identifies the harm type - fatalities or injuries. Here is the top 10 of most harmful weather events across the US from 1996 to 2011.
+
+```{r}
+topHarmNOAA <- melt(harmNOAA[1:10, ], 
+                    id.vars = "EVTYPE",
+                    measure.vars = c("FATALITIES", "INJURIES"),
+                    variable.name = "HARMTYPE", 
+                    value.name = "VICTIMS")
+
+print(topHarmNOAA)
+```
+
+The new dataset allows us to create a bar plot gathering both types, fatalities and injuries. 
+
+```{r}
+ggplot(topHarmNOAA, aes(EVTYPE, fill = HARMTYPE)) + 
+    geom_bar(aes(y = VICTIMS), stat = "identity") +
+    theme(axis.text.x = element_text(size = 8, angle = 45, vjust = .9, hjust = .9)) +
+    labs(x = "Weather event type",
+         y = "Total number of victims",
+         title = "Fig. 1: Victims of weather events \n in the US, 1996-2011") +
+    theme(plot.title = element_text(hjust = 0.5))
+```
+
+As Fig. 1 shows, EXCESSIVE HEAT was the most harmful weather event regarding fatalities. 
+
+```{r}
+harmNOAA$EVTYPE[which.max(harmNOAA$FATALITIES)]
+```
+
+However, Fig. 1 also shows that TORNADO was the most harmful weather event in terms of injuries and in general too. 
+
+```{r}
+harmNOAA$EVTYPE[which.max(harmNOAA$INJURIES)]
+
+harmNOAA$EVTYPE[which.max(harmNOAA$VICTIMS)]
+```
+
+
+### Greatest economic consequences
+
+Reminder:  
+2. Across the United States, which types of events have the greatest economic consequences?  
+  
+In order to answer the question, we will only take the ten first rows of the summarizing dataset we worked in the second part of Data processing.  
+Melt the subset to have a tiny one that identifies the damage type - crop or property damages. Here is the top 10 of greatest economic consequences (in M$) caused by weather events across the US from 1996 to 2011.
+
+```{r}
+topEcoNOAA <- melt(ecoNOAA[1:10, ], 
+                   id.vars = "EVTYPE",
+                   measure.vars = c("CDMG", "PDMG"),
+                   variable.name = "DMGTYPE", 
+                   value.name = "COST")
+
+print(topEcoNOAA)
+```
+
+The new dataset allows us to create a bar plot gathering both types, fatalities and injuries. 
+
+```{r}
+ggplot(topEcoNOAA, aes(EVTYPE, fill = DMGTYPE)) + 
+    geom_bar(aes(y = COST), stat = "identity") +
+    theme(axis.text.x = element_text(size = 8, angle = 45, vjust = .9, hjust = .9)) +
+    scale_fill_discrete(name = "Type of damage",
+                        labels = c("CROP", "PROPERTY")) +
+    labs(x = "Weather event type",
+         y = "Total cost of damages (in M$)",
+         title = "Fig. 2: Economic damages caused by weather events \n in the US, 1996-2011") +
+    theme(plot.title = element_text(hjust = 0.5))
+```
+
+As Fig. 2 shows, DROUGHT had the greatest economic consequences with regards of crop damages. 
+
+```{r}
+ecoNOAA$EVTYPE[which.max(ecoNOAA$CDMG)]
+```
+
+However, Fig. 2 also shows that FLOOD was the weather event with greatest economic consequences in terms of property damages. It has so much consequences that FLOOD is also the most severe event in general. 
+
+```{r}
+ecoNOAA$EVTYPE[which.max(ecoNOAA$PDMG)]
+ecoNOAA$EVTYPE[which.max(ecoNOAA$DMG)]
+```
+
+## Conclusion
+
+This analysis meant to explore the storm database provided by the US National Oceanic and Atmospheric Administration's (NOAA).
+
+The final results are an estimate although they clearly present the most harmful weather events across the US from 1996 to 2011 both from human and economic standpoints. That would be interesting to have a deeper look at where and when they occur.   
+
+We found out that EXCESSIVE HEAT and TORNADOES are the weather events that made more victims respectively in terms of fatalities and injuries. TORNADOES remain the most severe weather event.  
+On the other hand, the weather events DROUGHT and FLOOD had the greatest economic consequences respectively in terms of crop and property damages. FLOOD remain the most severe weather event.
+The weather events are different according to the kind of damages, either human or monetary.  
+
+In closing, merge the top datasets used to create the plots above. Remove the NAs introduces by coercion. We want to see if there is any correlation between the economic consequences and the number of victims in the top harmful weather events.
+
+```{r}
+harmEcoNOAA <- full_join(topHarmNOAA, topEcoNOAA)
+
+harmEcoNOAA <- harmEcoNOAA %>%
+    filter(!is.na(COST)) %>%
+    filter(!is.na(VICTIMS)) %>%
+    group_by(EVTYPE) %>%
+    summarize(VICTIMS = sum(VICTIMS), COST = sum(COST))
+
+print(harmEcoNOAA)
+```
+
+There are only 6 types of weather event in common. So let us melt the dataset in order to plot it.
+
+```{r}
+harmEcoNOAA <- melt(harmEcoNOAA, 
+                    id.vars = "EVTYPE", 
+                    variable.name = "DAMAGES", 
+                    value.name = "VALUE")
+```
+
+And see if there is a similar behavior between both type of damages regardless of y-axis units.
+
+```{r}
+ggplot(harmEcoNOAA, aes(x = EVTYPE, y = VALUE, fill = DAMAGES)) + 
+    geom_bar(stat = "identity") +
+    theme(axis.text.x = element_text(size = 8, angle = 45, vjust = .9, hjust = .9)) +
+    labs(x = "Weather event type",
+         y = "Total human and economic damages",
+         title = "Fig. 3: Human and economic damages caused by \n weather events in the US, 1996-2011") +
+    theme(plot.title = element_text(hjust = 0.5))
+```
+
+The worst weather events from an economic point of view are definitely not the ones that make more victims. 
